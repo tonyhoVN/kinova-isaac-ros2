@@ -1,0 +1,29 @@
+# Nominal RGB-D calibration for the Kinova Gen3 wrist vision module. Real
+# factory calibration varies by device; replace these values with the target
+# unit's calibration when matching physical hardware.
+intrinsics:
+  resolution: [640, 480]
+  # Nominal rectified 69.4 x 42.5 degree field of view with square pixels.
+  fx: 616.67
+  fy: 616.67
+  cx: 320.0
+  cy: 240.0
+  distortion_model: opencvPinhole
+  # OpenCV order: k1 k2 p1 p2 k3 k4 k5 k6 s1 s2 s3 s4.
+  distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+cameras:
+  # The USD camera is mounted directly on the URDF's own "camera_color_frame"
+  # link (see arms/gen3/7dof/urdf/gen3_macro.xacro's vision block), which
+  # already carries the vendor-correct offset from end_effector_link, so
+  # translation here is zero. camera_color_frame follows the vendor's
+  # REP-103-style body convention (+X forward, +Z up), not optical axes, so
+  # rotation converts that into USD's camera convention (looks down local -Z,
+  # up +Y): rotation_rpy_degrees=[90, 0, -90] maps local -Z -> body +X and
+  # local +Y -> body +Z. Verify visually in Isaac Sim and adjust if the image
+  # appears rotated relative to the physical camera.
+  handeye:
+    frame_id: handeye_camera_color_optical_frame
+    extrinsics:
+      translation_xyz_m: [0.0, 0.0, 0.0]
+      rotation_rpy_degrees: [180.0, 0.0, 0.0]
