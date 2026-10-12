@@ -17,8 +17,8 @@ env/kinova_urdf_assets/
 env/ycb_urdf/
 env/ycb_urdf_assets/
 
-# CodeGraph's local index manages its own .gitignore (ignores everything in
-# .codegraph/ except that file) — nothing to add here.
+# CodeGraph's local index — machine-local, not for committing.
+.codegraph/
 
 # Editor/IDE
 .vscode/
