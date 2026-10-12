@@ -226,6 +226,12 @@ def discover_models(ycb_folder: Path) -> list[Path]:
 
 
 def select_models(model_folders: list[Path], requested: list[str]) -> list[Path]:
+    """Resolve requested model names to folders, preserving order and repeats.
+
+    A name listed twice (e.g. `--objects banana banana`) yields two entries
+    pointing at the same folder, so callers that want to guarantee more than
+    one instance of a model spawns can just repeat its name.
+    """
     if not requested:
         return model_folders
     by_name: dict[str, Path] = {}
@@ -235,7 +241,7 @@ def select_models(model_folders: list[Path], requested: list[str]) -> list[Path]
     missing = [name for name in requested if name not in by_name]
     if missing:
         raise ValueError(f"Unknown/unavailable YCB models: {', '.join(missing)}")
-    return list(dict.fromkeys(by_name[name] for name in requested))
+    return [by_name[name] for name in requested]
 
 
 def main() -> int:

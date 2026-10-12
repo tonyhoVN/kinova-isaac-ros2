@@ -833,8 +833,9 @@ def create_ros_action_graph(
     """Create the ROS 2 action graph for joint state communication.
 
     Unlike a dual-arm setup with renamed left_/right_ URDF prefixes, this
-    single Kinova arm's URDF joint names (`joint_1`..`joint_7`) are already
-    the desired ROS names, so no per-joint rename table is needed here.
+    single Kinova arm's URDF joint names (`joint_1`..`joint_7`,
+    `robotiq_85_left_knuckle_joint`, ...) are already the desired ROS names,
+    so no per-joint rename table is needed here.
 
     Args:
         articulation_root_path: USD prim path for the active articulation root.
@@ -847,6 +848,7 @@ def create_ros_action_graph(
     import omni.graph.core as og
     import usdrt.Sdf
     from env.config import (
+        GRIPPER_JOINT_PREFIX,
         JOINT_COMMAND_TOPIC,
         JOINT_CONTROL_MODES,
         JOINT_STATE_TOPIC,
@@ -864,7 +866,12 @@ def create_ros_action_graph(
     unknown_fixed_joints = sorted(set(fixed_joint_names) - set(initial_gains))
     if unknown_fixed_joints:
         raise ValueError(f"Unknown fixed joints: {unknown_fixed_joints}")
-    native_pd_joint_names = fixed_joint_names
+    gripper_joint_names = tuple(
+        name for name in initial_gains if name.startswith(GRIPPER_JOINT_PREFIX)
+    )
+    native_pd_joint_names = tuple(
+        dict.fromkeys((*fixed_joint_names, *gripper_joint_names))
+    )
 
     publish_name_mapper_script = """
 import omni.graph.core as og

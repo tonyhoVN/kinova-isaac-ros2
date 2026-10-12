@@ -3,14 +3,15 @@
 readonly ISAAC_PYTHON="${HOME}/isaacsim/python.sh"
 readonly SIMULATION_SCRIPT="${HOME}/Projects/kinova_isaacsim/scripts/run_simulation_obj.py"
 
-# Candidate pool passed to run_simulation_obj.py, which samples five unique models.
+# Full candidate pool; this script randomly selects 3 distinct objects from
+# here on every run instead of spawning the whole list.
 readonly OBJECTS=(
   # apple
-  banana
+  # banana
   # foam_brick
-  cracker_box
-  hammer
-  medium_clamp
+  # cracker_box
+  # hammer
+  # medium_clamp
   rubiks_cube
   mustard_bottle
   # pear
@@ -23,10 +24,9 @@ readonly OBJECTS=(
   scissors
   strawberry
   tennis_ball
-  tomato_soup_can
-  sugar_box
-  adjustable_wrench
-  # windex_bottle
+  # tomato_soup_can
+  # sugar_box
+  # adjustable_wrench
 )
 
 if [[ ! -x "${ISAAC_PYTHON}" ]]; then
@@ -39,10 +39,9 @@ if [[ ! -f "${SIMULATION_SCRIPT}" ]]; then
 fi
 
 "${ISAAC_PYTHON}" "${SIMULATION_SCRIPT}" \
-  --number 6 \
+  --number 2 \
   --objects "${OBJECTS[@]}" \
   --min-spacing 0.02 \
   --x-range -0.15 0.15 \
   --y-range -0.1 0.1 \
-  --control-mode pd  \
-  --headless
+  --control-mode pd  

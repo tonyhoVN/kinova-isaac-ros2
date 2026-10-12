@@ -1,4 +1,4 @@
-"""Generate the Gen3 arm URDF, import it into Isaac Sim, and export the scene.
+"""Generate the Gen3+Robotiq URDF, import it into Isaac Sim, and export the scene.
 
 Run with Isaac Sim 6.0.1:
 
@@ -21,6 +21,9 @@ from env.config import (
     GEN3_SRDF,
     GEN3_URDF,
     GRID_ENV_USD,
+    GRIPPER_DRIVE_JOINT,
+    GRIPPER_DRIVE_JOINT_LIMITS_RAD,
+    GRIPPER_MIMIC_FOLLOWER_MULTIPLIERS,
     KINOVA_URDF_ASSET_DIR,
     OUTPUT_USDA,
     TABLE_USD,
@@ -31,6 +34,9 @@ from env.generate_urdf import generate_model
 
 ARM_JOINT_STIFFNESS = 4000.0
 ARM_JOINT_DAMPING = 200.0
+GRIPPER_JOINT_STIFFNESS = 1000.0
+GRIPPER_JOINT_DAMPING = 10.0
+GRIPPER_MAX_FORCE = 100.0
 
 
 def set_translate(prim, xyz: tuple[float, float, float]) -> None:
@@ -139,18 +145,18 @@ def make_handeye_camera(stage, camera_color_frame_prim) -> str:
 
 
 def import_kinova_urdf(urdf_path: Path, asset_dir: Path) -> Path:
-    """Import the Gen3 arm articulation, with a content-addressed cache."""
+    """Import the Gen3+Robotiq articulation, with a content-addressed cache."""
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
-    from env.config import KORTEX_DESCRIPTION_DIR
+    from env.config import KORTEX_DESCRIPTION_DIR, ROBOTIQ_DESCRIPTION_DIR
 
     digest = hashlib.sha256(urdf_path.read_bytes()).hexdigest()[:12]
-    import_dir = asset_dir / f"gen3_{digest}"
+    import_dir = asset_dir / f"gen3_robotiq_2f_85_{digest}"
     marker = import_dir / ".asset_path"
 
     if marker.is_file():
         cached = Path(marker.read_text(encoding="utf-8").strip())
         if cached.is_file():
-            print(f"Using cached Gen3 asset: {cached}")
+            print(f"Using cached Gen3+Robotiq asset: {cached}")
             return cached.resolve()
 
     asset_name = urdf_path.stem
@@ -158,7 +164,7 @@ def import_kinova_urdf(urdf_path: Path, asset_dir: Path) -> Path:
         cached = import_dir / asset_name / f"{asset_name}{extension}"
         if cached.is_file():
             marker.write_text(str(cached.resolve()), encoding="utf-8")
-            print(f"Using cached Gen3 asset: {cached}")
+            print(f"Using cached Gen3+Robotiq asset: {cached}")
             return cached.resolve()
 
     import_dir.mkdir(parents=True, exist_ok=True)
@@ -166,8 +172,8 @@ def import_kinova_urdf(urdf_path: Path, asset_dir: Path) -> Path:
         urdf_path=str(urdf_path.resolve()),
         usd_path=str(import_dir.resolve()),
         # Fixed joints must not be merged away: camera_link/camera_depth_frame/
-        # camera_color_frame are all connected via fixed joints and would
-        # otherwise disappear.
+        # camera_color_frame and the gripper's structural links are all
+        # connected via fixed joints and would otherwise disappear.
         merge_fixed_joints=False,
         fix_base=True,
         allow_self_collision=False,
@@ -175,13 +181,14 @@ def import_kinova_urdf(urdf_path: Path, asset_dir: Path) -> Path:
         joint_target_type="position",
         ros_package_paths=[
             {"name": "kortex_description", "path": str(KORTEX_DESCRIPTION_DIR.resolve())},
+            {"name": "robotiq_description", "path": str(ROBOTIQ_DESCRIPTION_DIR.resolve())},
         ],
     )
     result = Path(URDFImporter(config).import_urdf()).resolve()
     if not result.is_file():
         raise RuntimeError(f"URDF importer did not create the expected asset: {result}")
     marker.write_text(str(result), encoding="utf-8")
-    print(f"Imported Gen3 asset: {result}")
+    print(f"Imported Gen3+Robotiq asset: {result}")
     return result
 
 
@@ -225,6 +232,32 @@ def initialize_joints(stage, srdf_path: Path) -> None:
             joint, position, ARM_JOINT_STIFFNESS, ARM_JOINT_DAMPING
         )
 
+    gripper = find_unique_prim(stage, ARM, GRIPPER_DRIVE_JOINT, UsdPhysics.RevoluteJoint)
+    set_initial_revolute_joint_position(gripper, 0.0, GRIPPER_JOINT_STIFFNESS, GRIPPER_JOINT_DAMPING)
+    UsdPhysics.DriveAPI.Apply(gripper, "angular").CreateMaxForceAttr().Set(GRIPPER_MAX_FORCE)
+
+
+def fix_gripper_mimic_joint_limits(stage) -> None:
+    """Author finite limits on the Robotiq's continuous mimic-follower joints.
+
+    robotiq_85_{left,right}_inner_knuckle_joint and
+    robotiq_85_{left,right}_finger_tip_joint are URDF "continuous" mimics of
+    GRIPPER_DRIVE_JOINT (see robotiq_2f_85_macro.urdf.xacro), so the URDF
+    importer creates them as USD RevoluteJoints with no authored limit.
+    Isaac's Newton mimic-joint constraint rejects a revolute follower with no
+    finite limit, so each gets one derived from the drive joint's own
+    [0, 0.8] rad limit and its mimic multiplier.
+    """
+    from pxr import UsdPhysics
+
+    lower_rad, upper_rad = GRIPPER_DRIVE_JOINT_LIMITS_RAD
+    for joint_name, multiplier in GRIPPER_MIMIC_FOLLOWER_MULTIPLIERS.items():
+        joint = find_unique_prim(stage, ARM, joint_name, UsdPhysics.RevoluteJoint)
+        bounds = sorted((multiplier * lower_rad, multiplier * upper_rad))
+        revolute = UsdPhysics.RevoluteJoint(joint)
+        revolute.CreateLowerLimitAttr().Set(math.degrees(bounds[0]))
+        revolute.CreateUpperLimitAttr().Set(math.degrees(bounds[1]))
+
 
 def build_stage(output_path: Path = Path(OUTPUT_USDA), asset_dir: Path = KINOVA_URDF_ASSET_DIR):
     """Generate, import, initialize, and export the single-Kinova table scene."""
@@ -264,8 +297,9 @@ def build_stage(output_path: Path = Path(OUTPUT_USDA), asset_dir: Path = KINOVA_
 
     # Mount the arm's fixed base on the tabletop.
     robot = add_reference(stage, ARM, str(robot_asset))
-    set_translate(robot, (-0.2, 0.0, 1.2))
+    set_translate(robot, (-0.2, 0.0, 1.0))
     initialize_joints(stage, GEN3_SRDF)
+    fix_gripper_mimic_joint_limits(stage)
 
     articulation_roots = [
         prim

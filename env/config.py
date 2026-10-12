@@ -7,7 +7,7 @@ WORLD = "/World"
 # Prim under which the imported Kinova USD asset is referenced. The URDF's own
 # root link is literally named "world" (a fixed, massless link — see
 # gen3.xacro), so this prim IS that link once referenced; every other link
-# (base_link, shoulder_link, ..., camera_color_frame, tool_frame) appears as
+# (base_link, shoulder_link, ..., camera_color_frame, robotiq_85_*) appears as
 # a descendant of it. Exact nesting depth is not hardcoded anywhere in this
 # project — prims are found by name via stage traversal (see
 # `find_unique_prim` in env/kinova_table_urdf.py and scripts/simulation_utils.py)
@@ -76,19 +76,20 @@ ENV_FOLDER_DIR = Path(__file__).resolve().parent
 USDA_FILE_NAME = "kinova_table_generated.usda"
 OUTPUT_USDA = f"{str(ENV_FOLDER_DIR)}/{USDA_FILE_NAME}"
 
-### Xacro-imported single Kinova Gen3 7DOF arm (no gripper) ###
+### Xacro-imported single Kinova Gen3 7DOF arm + Robotiq 2F-85 gripper ###
 ROS_VERSION = "humble"
 
-# Vendored ROS package is NOT copied into this project (it's a large,
-# externally maintained checkout); xacro resolves `$(find ...)` against it
+# Vendored ROS packages are NOT copied into this project (they are large,
+# externally maintained checkouts); xacro resolves `$(find ...)` against them
 # directly via a faked ament index (see env/generate_urdf.py::_xacro_environment).
 KORTEX_DESCRIPTION_DIR = Path.home() / "Projects/kinova_ws/src/ros2_kortex/kortex_description"
+ROBOTIQ_DESCRIPTION_DIR = Path.home() / "Projects/kinova_ws/src/ros2_robotiq_gripper/robotiq_description"
 
 GEN3_URDF_XACRO = KORTEX_DESCRIPTION_DIR / "robots/gen3.xacro"
 KINOVA_URDF_DIR = ENV_FOLDER_DIR / "urdf"
 GEN3_URDF = KINOVA_URDF_DIR / "gen3.urdf"
 # Hand-authored (Kinova ships no parametrized SRDF xacro); mirrors the "ready"
-# joint values from kortex_moveit_config's own gen3.srdf "Vertical" group state.
+# joint values from kortex_moveit_config's own gen3.srdf "Home" group state.
 GEN3_SRDF = KINOVA_URDF_DIR / "gen3.srdf"
 
 KINOVA_URDF_ASSET_DIR = ENV_FOLDER_DIR / "kinova_urdf_assets"
@@ -98,36 +99,66 @@ ROS_PYTHON_PATHS = (
     f"/opt/ros/{ROS_VERSION}/lib/python3.10/site-packages",
 )
 
-# Xacro arguments used to build a fixed-base single Gen3 7DOF arm (no
-# gripper) with the wrist vision module enabled. `gen3.xacro` always parents
-# the arm to a `<link name="world"/>` it defines itself, so a fixed base
-# requires no extra xacro argument. Omitting `gripper:=` leaves it at its
-# xacro default (empty), which makes `kortex_robot.xacro` terminate the arm
-# in a plain `tool_frame` link instead of attaching any gripper.
+# Xacro arguments used to build a fixed-base single Gen3 7DOF arm with the
+# Robotiq 2F-85 gripper and the wrist vision module enabled. `gen3.xacro`
+# always parents the arm to a `<link name="world"/>` it defines itself, so a
+# fixed base requires no extra xacro argument.
 GEN3_XACRO_ARGS = (
     "arm:=gen3",
     "dof:=7",
     "vision:=true",
+    "gripper:=robotiq_2f_85",
     "sim_isaac:=true",
     "use_fake_hardware:=true",
     "prefix:=",
     "robot_ip:=192.168.11.11",
 )
 
-### Arm link/joint names (as emitted by the xacro above) ###
+### Arm/gripper joint names (as emitted by the xacro above) ###
 CAMERA_COLOR_FRAME_LINK = "camera_color_frame"
+# The only actuated (non-mimic) gripper joint; every other robotiq_85_* joint
+# mimics it (see robotiq_2f_85_macro.urdf.xacro).
+GRIPPER_DRIVE_JOINT = "robotiq_85_left_knuckle_joint"
+# Matches GRIPPER_DRIVE_JOINT's own <limit lower="0.0" upper="0.8" .../> in
+# robotiq_2f_85_macro.urdf.xacro.
+GRIPPER_DRIVE_JOINT_LIMITS_RAD = (0.0, 0.8)
+# Prefix shared by every gripper joint, used to keep the whole gripper under
+# native PD control regardless of the arm's selected control mode.
+GRIPPER_JOINT_PREFIX = "robotiq_85_"
+# These four joints are URDF "continuous" mimics of GRIPPER_DRIVE_JOINT (see
+# robotiq_2f_85_macro.urdf.xacro), so the importer creates them as USD
+# RevoluteJoints with no authored limit. Isaac's Newton mimic-joint
+# constraint requires a finite limit on a revolute follower joint, so each
+# must get one derived from the drive joint's own limit and mimic multiplier
+# (see env/kinova_table_urdf.py::fix_gripper_mimic_joint_limits).
+GRIPPER_MIMIC_FOLLOWER_MULTIPLIERS = {
+    "robotiq_85_left_inner_knuckle_joint": 1.0,
+    "robotiq_85_right_inner_knuckle_joint": -1.0,
+    "robotiq_85_left_finger_tip_joint": -1.0,
+    "robotiq_85_right_finger_tip_joint": 1.0,
+}
 
 ### Simulation ###
 PHYSICS_DT = 1.0 / 100.0
 RENDER_DT = 1.0 / 10.0
 JOINT_CONTROL_MODES = ("pd", "mit", "direct_force_g_compensation")
-# No slider/rail joint exists in this single fixed-base arm; nothing needs to
-# be held fixed by default.
-FIXED_JOINTS: tuple[str, ...] = ()
+# Joints listed here are stripped from any incoming /isaac_joint_commands
+# message by JointNameMapper (see scripts/simulation_utils.py) before it ever
+# reaches the articulation controller, in every control mode -- regardless of
+# what the publisher sends. They stay attached and held by their native PD
+# drive at whatever initialize_joints() set (the gripper starts open), just
+# permanently excluded from the ROS command interface: by default the
+# commandable joints are joint_1..joint_7 only, no gripper. Pass an empty
+# --fixed-joints at launch to command the gripper too.
+FIXED_JOINTS: tuple[str, ...] = ("robotiq_85_left_knuckle_joint",)
 JOINT_COMMAND_TOPIC = "/isaac_joint_commands"
 JOINT_STATE_TOPIC = "/isaac_joint_states"
 JOINT_GAIN_SERVICE = "/set_isaac_joint_gains"
 SEGMENTATION_SAVE_SERVICE = "/save_object_segmentations"
+# Instance names (object_NNN_<class>) are assigned at spawn time by index, so
+# external consumers cannot predict them from a fixed name list; this service
+# reports the current mapping on demand instead.
+SCENE_OBJECT_LIST_SERVICE = "/list_scene_objects"
 
 ### YCB objects ###
 # Reuses the reference project's already-downloaded YCB model library instead

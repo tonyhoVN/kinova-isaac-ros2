@@ -4,24 +4,25 @@ This project adapts the dual-Franka `dual_manipulation_isaac_sim` testbed
 (`~/Projects/dual_manipulation_isaac_sim`) into a single-arm manipulation
 scene:
 
-- one Kinova Gen3 7DOF arm (no gripper), base fixed to a table
+- one Kinova Gen3 7DOF arm with a Robotiq 2F-85 gripper, base fixed to a table
 - the arm's built-in wrist vision module exposed as one RGB-D hand-eye camera
 - a shared table with randomly spawned YCB objects
 - ROS 2 joint command/state topics, a runtime gain-tuning service, and an
   object-segmentation-mask save service
 
-The robot description comes from the vendored ROS package at
-`~/Projects/kinova_ws/src/ros2_kortex/kortex_description` (read directly,
-not copied into this project — see `env/config.py`). YCB meshes are likewise
-reused from `~/Projects/dual_manipulation_isaac_sim/env/ycb-tools` instead of
-being duplicated here.
+The robot description comes from the vendored ROS packages at
+`~/Projects/kinova_ws/src/ros2_kortex/kortex_description` and
+`~/Projects/kinova_ws/src/ros2_robotiq_gripper/robotiq_description` (read
+directly, not copied into this project — see `env/config.py`). YCB meshes are
+likewise reused from `~/Projects/dual_manipulation_isaac_sim/env/ycb-tools`
+instead of being duplicated here.
 
 ## Project layout
 
 - `env/`
   - `config.py` — paths, prim names, joint names, physics rates, xacro args
-  - `generate_urdf.py` — expands `gen3.xacro` (arm + vision, no gripper) via
-    a faked ament index, then validates the resulting URDF
+  - `generate_urdf.py` — expands `gen3.xacro` (arm + gripper + vision) via a
+    faked ament index, then validates the resulting URDF
   - `kinova_table_urdf.py` — imports the URDF into Isaac Sim, builds the
     table scene, sets the arm's ready pose, mounts the hand-eye camera, and
     exports the USD stage (run inside Isaac Sim's own Python)
@@ -32,10 +33,11 @@ being duplicated here.
   - `urdf/gen3.srdf` — hand-authored "ready" joint pose
 - `scripts/`
   - `run_simulation.py` — opens the exported scene and runs the ROS 2 bridge
-  - `run_simulation_obj.py` — same, plus spawns random YCB objects and the
-    segmentation-save service
+  - `run_simulation_obj.py` — same, plus spawns random YCB objects, the
+    segmentation-save service, and the scene-object-list service
   - `simulation_utils.py` — OmniGraph/ROS 2 wiring shared by both runners
   - `segmentation_service.py` — `/save_object_segmentations` service
+  - `scene_object_list_service.py` — `/list_scene_objects` service
   - `publish_sine_joint_commands.py` — example joint-command publisher
 - `utils/` — shared path and JSON-state helpers
 
@@ -84,17 +86,6 @@ To command effort directly while Isaac Sim compensates gravity:
 
 ## Use MoveIt
 
-`~/Projects/kinova_ws` only ships gripper-equipped MoveIt configs
-(`kinova_gen3_7dof_robotiq_2f_85_moveit_config`, etc.) — there is no
-gripper-less variant, and `robot.launch.py` hardcodes
-`"gripper": "robotiq_2f_85"` (not exposed as a launch argument), so it can't
-be overridden from the command line. **Since this project's Isaac Sim scene
-now has no gripper, launching that MoveIt config as-is will model/plan
-around a gripper that doesn't exist in the simulation** — expect it to try
-commanding gripper joints Isaac's articulation doesn't have. To use MoveIt
-with this arm-only build for real, you'd need your own MoveIt config
-generated (e.g. via MoveIt Setup Assistant) against `env/urdf/gen3.urdf`.
-
 ```bash
 ros2 launch kinova_gen3_7dof_robotiq_2f_85_moveit_config robot.launch.py \
   robot_ip:=yyy.yyy.yyy.yyy \
@@ -104,13 +95,26 @@ ros2 launch kinova_gen3_7dof_robotiq_2f_85_moveit_config robot.launch.py \
 ## ROS 2 interface
 
 - `/isaac_joint_commands` (sub, `sensor_msgs/JointState`) — position/velocity
-  (or effort, depending on control mode) targets for `joint_1`..`joint_7`.
+  (or effort, depending on control mode) targets. By default (`FIXED_JOINTS`
+  in `env/config.py`) only `joint_1`..`joint_7` are commandable; the gripper
+  (`robotiq_85_left_knuckle_joint`, whose mimics follow automatically) stays
+  attached and held at its native-PD position (open) but is excluded from
+  this topic — pass `--fixed-joints` with no values at launch to make it
+  commandable too.
 - `/isaac_joint_states` (pub, `sensor_msgs/JointState`) — measured state.
 - `/set_isaac_joint_gains` (`rcl_interfaces/SetParametersAtomically`) —
   runtime `<joint_name>.kp` / `<joint_name>.kd` updates.
 - `/save_object_segmentations` (`rcl_interfaces/SetParametersAtomically`) —
   params `save_directory`, `camera_frame` (`handeye_camera_color_optical_frame`);
   saves one instance mask per visible YCB object plus a `manifest.json`.
+- `/list_scene_objects` (`std_srvs/Trigger`, `run_simulation_obj.py` only) —
+  call with an empty request; `response.message` is a JSON array of
+  `{class_name, instance_name, prim_path}` for every currently spawned YCB
+  object. Each object's `instance_name` (`object_NNN_<class_name>`) is
+  assigned by spawn index at runtime, so it — and therefore which files
+  correspond to which physical object in a segmentation capture — is not
+  predictable from a fixed name list; query this service instead of
+  hardcoding names.
 - `/handeye/color/image_raw/compressed`, `/handeye/aligned_depth_to_color/image_raw`,
   `/handeye/color/camera_info` — the hand-eye RGB-D camera.
 - `/tf_static`: `camera_color_frame` -> `handeye_camera_color_optical_frame` —
@@ -128,8 +132,6 @@ ros2 launch kinova_gen3_7dof_robotiq_2f_85_moveit_config robot.launch.py \
   check the rendered image orientation and adjust if needed.
 - Per-joint PD stiffness/damping (`env/kinova_table_urdf.py`) are generic
   defaults; Kinova ships no per-joint dynamics.yaml equivalent to Franka's.
-- No gripper is attached (see "Use MoveIt" above for what that means for
-  MoveIt integration). To re-add the Robotiq 2F-85, add back
-  `"gripper:=robotiq_2f_85"` to `env/config.py`'s `GEN3_XACRO_ARGS` and the
-  `ros2_robotiq_gripper/robotiq_description` faked-ament-package entry in
-  `env/generate_urdf.py`.
+- `env/urdf/gen3.srdf`'s "ready" pose is a bent working configuration chosen
+  for this project, not copied verbatim from kortex_moveit_config's own
+  "Home" state (joint_2/joint_4/joint_6 differ slightly).

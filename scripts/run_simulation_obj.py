@@ -200,7 +200,15 @@ def spawn_ycb_objects(
     minimum_spacing: float,
     static_friction: float,
     dynamic_friction: float,
-) -> list[str]:
+) -> list[tuple[str, str]]:
+    """Spawn the given assets and return each object's (class_name, prim_path).
+
+    Both class_name and prim_path are needed by callers: the segmentation
+    service only needs prim_path, while SceneObjectListService needs the
+    class_name too, since an object's *instance* name (`object_NNN_<class>`,
+    derived from spawn order/index) is only assigned here at runtime and is
+    not something an external consumer can predict from a fixed name list.
+    """
     from isaacsim.core.experimental.utils.semantics import add_labels
     from pxr import Gf, UsdGeom, UsdPhysics, UsdShade
 
@@ -213,7 +221,7 @@ def spawn_ycb_objects(
     physics_material.CreateDynamicFrictionAttr().Set(dynamic_friction)
     physics_material.CreateRestitutionAttr().Set(0.0)
     positions = _sample_positions(rng, len(assets), area, minimum_spacing)
-    paths: list[str] = []
+    spawned: list[tuple[str, str]] = []
     table_yaw = math.degrees(math.atan2(area.x_axis_xy[1], area.x_axis_xy[0]))
     for index, ((model_name, asset), (table_x, table_y)) in enumerate(zip(assets, positions)):
         world_x, world_y = _table_to_world_xy(area, table_x, table_y)
@@ -233,8 +241,8 @@ def spawn_ycb_objects(
             Gf.Vec3d(world_x, world_y, area.table_top + drop_height)
         )
         xform.AddRotateZOp().Set(table_yaw + rng.uniform(-180.0, 180.0))
-        paths.append(prim_path)
-    return paths
+        spawned.append((model_name, prim_path))
+    return spawned
 
 
 def _choose_models(rng: random.Random, models: list[Path], number: int) -> list[Path]:
@@ -354,6 +362,8 @@ def main() -> int:
 
     rng = random.Random(args.seed)
     selected = _choose_models(rng, candidates, args.number)
+    print(f"[run_simulation_obj] Candidate pool: {[model.name for model in candidates]}")
+    print(f"[run_simulation_obj] Selected {len(selected)} model(s): {[model.name for model in selected]}")
     urdfs = [create_ycb_urdf(model) for model in selected]
 
     prefer_internal_ros_libraries()
@@ -363,6 +373,7 @@ def main() -> int:
     joint_gain_service = None
     camera_tf_publisher = None
     segmentation_service = None
+    scene_object_list_service = None
 
     enable_collision_viewer(simulation_app)
 
@@ -400,7 +411,7 @@ def main() -> int:
             area = replace(area, y_min=args.y_range[0], y_max=args.y_range[1])
         if args.table_height is not None:
             area = replace(area, table_top=args.table_height)
-        object_prim_paths = spawn_ycb_objects(
+        spawned_objects = spawn_ycb_objects(
             stage,
             assets,
             rng,
@@ -410,6 +421,7 @@ def main() -> int:
             static_friction=args.static_friction,
             dynamic_friction=args.dynamic_friction,
         )
+        object_prim_paths = [prim_path for _, prim_path in spawned_objects]
 
         # Create simulation world
         world = World(physics_dt=PHYSICS_DT, rendering_dt=RENDER_DT)
@@ -434,6 +446,12 @@ def main() -> int:
             if args.fixed_joints:
                 print(f"[run_simulation_obj] Fixed joints: {args.fixed_joints}")
 
+            try:
+                from scripts.scene_object_list_service import SceneObjectListService
+            except ModuleNotFoundError:
+                from scene_object_list_service import SceneObjectListService
+            scene_object_list_service = SceneObjectListService(spawned_objects)
+
         # Run some initial steps
         for _ in range(10):
             simulation_app.update()
@@ -452,6 +470,8 @@ def main() -> int:
                 joint_gain_service.spin_once()  # Update joint Kp, Kd
             if camera_tf_publisher is not None:
                 camera_tf_publisher.spin_once()
+            if scene_object_list_service is not None:
+                scene_object_list_service.spin_once()
 
             # Object segmentation image ROS service
             if args.ros and segmentation_service is None:
@@ -473,6 +493,8 @@ def main() -> int:
             joint_gain_service.close()
         if camera_tf_publisher is not None:
             camera_tf_publisher.close()
+        if scene_object_list_service is not None:
+            scene_object_list_service.close()
         if stats_overlay is not None:
             stats_overlay.destroy()
         try:

@@ -1,4 +1,4 @@
-"""Generate and validate the fixed-base Gen3 7DOF (no gripper) URDF."""
+"""Generate and validate the fixed-base Gen3 7DOF + Robotiq 2F-85 URDF."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ try:
         GEN3_URDF_XACRO,
         GEN3_XACRO_ARGS,
         KORTEX_DESCRIPTION_DIR,
+        ROBOTIQ_DESCRIPTION_DIR,
         ROS_PYTHON_PATHS,
         ROS_VERSION,
         XACRO_EXECUTABLE,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:
         GEN3_URDF_XACRO,
         GEN3_XACRO_ARGS,
         KORTEX_DESCRIPTION_DIR,
+        ROBOTIQ_DESCRIPTION_DIR,
         ROS_PYTHON_PATHS,
         ROS_VERSION,
         XACRO_EXECUTABLE,
@@ -41,10 +43,11 @@ def _fake_ament_package(prefix: Path, package_name: str, package_dir: Path) -> N
 
 
 def _xacro_environment(prefix: Path) -> dict[str, str]:
-    # With no gripper argument, gen3.xacro only pulls in kortex_description
-    # (arm macros) — robotiq_description is never included, so it needs no
-    # faked ament entry.
+    # gen3.xacro pulls in both kortex_description (arm/gripper macros) and
+    # robotiq_description (the Robotiq 2F-85 gripper macro itself), so both
+    # `$(find ...)` targets must resolve without a real ROS install.
     _fake_ament_package(prefix, "kortex_description", KORTEX_DESCRIPTION_DIR)
+    _fake_ament_package(prefix, "robotiq_description", ROBOTIQ_DESCRIPTION_DIR)
 
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
@@ -71,7 +74,7 @@ def _expand(source: Path, output: Path, environment: dict[str, str]) -> None:
 
 
 def _rewrite_fake_package_paths(urdf_path: Path, prefix: Path) -> None:
-    """Replace the temporary faked-package symlink path with its real target.
+    """Replace the temporary faked-package symlink paths with their real targets.
 
     xacro's `$(find <pkg>)` substitution resolves to the ament-index prefix
     path itself (`prefix/share/<pkg>`, the symlink), not the symlink's
@@ -81,9 +84,13 @@ def _rewrite_fake_package_paths(urdf_path: Path, prefix: Path) -> None:
     ever opens the URDF.
     """
     text = urdf_path.read_text(encoding="utf-8")
-    old = str(prefix / "share/kortex_description")
-    new = str(KORTEX_DESCRIPTION_DIR.resolve())
-    urdf_path.write_text(text.replace(old, new), encoding="utf-8")
+    replacements = {
+        str(prefix / "share/kortex_description"): str(KORTEX_DESCRIPTION_DIR.resolve()),
+        str(prefix / "share/robotiq_description"): str(ROBOTIQ_DESCRIPTION_DIR.resolve()),
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    urdf_path.write_text(text, encoding="utf-8")
 
 
 def _duplicates(elements: list[ET.Element]) -> set[str]:
@@ -114,12 +121,12 @@ def validate_urdf(path: Path) -> None:
         "camera_link",
         "camera_depth_frame",
         "camera_color_frame",
-        # With no gripper, kortex_robot.xacro terminates the arm here instead.
-        "tool_frame",
+        "robotiq_85_base_link",
     }
     required_joints = {
         *(f"joint_{index}" for index in range(1, 8)),
-        "tool_frame_joint",
+        "robotiq_85_left_knuckle_joint",
+        "robotiq_85_right_knuckle_joint",
     }
     missing = (required_links - link_names) | (required_joints - joint_names)
     if missing:
